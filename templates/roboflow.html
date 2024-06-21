@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>DeBenih Realtime Detection</title>
+    <script src="https://cdn.roboflow.com/0.2.26/roboflow.js"></script>
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+        overflow: hidden;
+      }
+      #video {
+        width: 100vw;
+        height: 100vh;
+      }
+      canvas {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100vw;
+        height: 100vh;
+        pointer-events: none;
+      }
+    </style>
+  </head>
+  <body>
+    <video id="video" autoplay playsinline></video>
+    <canvas id="canvas"></canvas>
+    <script>
+      console.log("JavaScript is running");
+      const video = document.getElementById("video");
+      const canvas = document.getElementById("canvas");
+      const context = canvas.getContext("2d");
+
+      navigator.mediaDevices.getUserMedia({ video: true }).then((stream) => {
+        video.srcObject = stream;
+
+        const roboflow = new window.Roboflow({
+          apiKey: "XCnFPgdy4jD7In2rXA9V",
+        });
+
+        roboflow
+          .load({
+            model: "quality-of-unhusked-rice/1",
+          })
+          .then((model) => {
+            video.onloadeddata = () => {
+              setInterval(() => {
+                model.detect(video).then((predictions) => {
+                  context.clearRect(0, 0, canvas.width, canvas.height);
+
+                  predictions.forEach((prediction) => {
+                    const { x, y, width, height, class: className, confidence } = prediction;
+                    const x1 = x - width / 2;
+                    const y1 = y - height / 2;
+
+                    context.beginPath();
+                    context.rect(x1, y1, width, height);
+                    context.lineWidth = 2;
+                    context.strokeStyle = "red";
+                    context.fillStyle = "red";
+                    context.stroke();
+                    context.fillText(
+                      `${className} (${Math.round(confidence * 100)}%)`,
+                      x1,
+                      y1 > 10 ? y1 - 5 : 10
+                    );
+                  });
+
+                  if (predictions.length > 0) {
+                    window.flutter_inappwebview.callHandler(
+                      "detect",
+                      JSON.stringify(predictions)
+                    );
+                  }
+                });
+              }, 100); 
+            };
+          })
+          .catch((error) => {
+            console.error(error);
+          });
+      });
+    </script>
+  </body>
+</html>

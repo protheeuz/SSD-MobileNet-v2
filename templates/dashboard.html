@@ -1,0 +1,351 @@
+<!-- dashboard.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <title>Dashboard</title>
+    <style>
+        .modal {
+            display: none; 
+            position: fixed; 
+            z-index: 1; 
+            padding-top: 60px; 
+            left: 0;
+            top: 0;
+            width: 100%; 
+            height: 100%; 
+            overflow: auto; 
+            background-color: rgb(0,0,0); 
+            background-color: rgba(0,0,0,0.4); 
+        }
+
+        .modal-content {
+            margin: auto;
+            display: block;
+            width: 80%;
+            max-width: 700px;
+        }
+
+        .close {
+            position: absolute;
+            top: 15px;
+            right: 35px;
+            color: #f1f1f1;
+            font-size: 40px;
+            font-weight: bold;
+            transition: 0.3s;
+        }
+
+        .close:hover,
+        .close:focus {
+            color: #bbb;
+            text-decoration: none;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg navbar-dark">
+        <a class="navbar-brand" href="#">Dashboard</a>
+        <button class="navbar-toggler" type="button" data-toggle="collapse" data-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
+            <span class="navbar-toggler-icon"></span>
+        </button>
+        <div class="collapse navbar-collapse" id="navbarNav">
+            <ul class="navbar-nav ml-auto">
+                <li class="nav-item">
+                    <a class="nav-link" href="{{ url_for('logout') }}">Keluar</a>
+                </li>
+            </ul>
+        </div>
+    </nav>
+    <div class="sidebar">
+        <a href="{{ url_for('dashboard') }}">Dashboard</a>
+        <a href="{{ url_for('detect') }}">Pendeteksian</a>
+        <a href="{{ url_for('logout') }}">Keluar</a>
+    </div>
+    <div class="main-content">
+        <h1 class="h3 mb-4 text-gray-800">Selamat Datang, {{ current_user.nama }}</h1>
+        <div class="row">
+            <div class="col-lg-3 col-md-6 mb-4">
+                <div class="card bg-primary text-white shadow">
+                    <div class="card-body">
+                        <div class="text-center">
+                            <div class="h5">Total Deteksi</div>
+                            <div class="h5">{{ total_deteksi }}</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-lg-3 col-md-6 mb-4">
+                <div class="card bg-success text-white shadow">
+                    <div class="card-body">
+                        <div class="text-center">
+                            <div class="h5">Total Deteksi / Hari</div>
+                            <div class="h5">{{ visits_today }}</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-lg-3 col-md-6 mb-4">
+                <div class="card bg-info text-white shadow">
+                    <div class="card-body">
+                        <div class="text-center">
+                            <div class="h5">Rata-rata Pengunjung</div>
+                            <div class="h5">{{ rata_rata_pengunjung }}</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <!-- Laporan Kunjungan -->
+        <div class="card mb-4">
+            <div class="card-header">Laporan Kunjungan</div>
+            <div class="card-body">
+                <table class="table table-bordered">
+                    <thead>
+                        <tr>
+                            <th>Hari</th>
+                            <th>Tanggal</th>
+                            <th>Waktu</th>
+                            <th>Total Deteksi</th>
+                            <th>Foto</th>
+                            <th>Aksi</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for report in reports %}
+                            <tr>
+                                <td>{{ report[1] }}</td>
+                                <td>{{ report[2] }}</td>
+                                <td>{{ report[3] }}</td>
+                                <td>{{ report[4] }}</td>
+                                <td>
+                                    <button type="button" class="btn btn-primary" onclick="myBtnClick('{{ '/' + report[5] }}')">Foto</button>
+                                </td>
+                                <td>
+                                    <form action="{{ url_for('delete_report', report_id=report[0]) }}" method="post" style="display:inline;">
+                                        <button type="submit" class="btn btn-danger" onclick="return confirm('Apakah Anda yakin ingin menghapus laporan ini?');">Hapus</button>
+                                    </form>
+                                </td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                <div class="pagination"></div>
+            </div>
+        </div>
+        <!-- Grafik Kunjungan dan Grafik Deteksi per Hari -->
+        <div class="row">
+            <div class="col-lg-6 mb-4">
+                <div class="card mb-4">
+                    <div class="card-header">Grafik Kunjungan</div>
+                    <div class="card-body">
+                        <canvas id="visitChart"></canvas>
+                    </div>
+                </div>
+            </div>
+            <div class="col-lg-6 mb-4">
+                <div class="card mb-4">
+                    <div class="card-header">Grafik Deteksi per Hari</div>
+                    <div class="card-body">
+                        <canvas id="dailyDetectionChart"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="row">
+            <div class="col">
+                <div class="card mb-4">
+                    <div class="card-header">Grafik Jumlah Pengunjung Per Minggu</div>
+                    <div class="card-body">
+                        <canvas id="WeeklyDetectionChart"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div id="myModal" class="modal">
+        <!-- Close button -->
+        <span class="close">&times;</span>
+        <!-- Modal Content (The Image) -->
+        <img class="modal-content" id="img01" src="">
+    </div>
+    <script src="https://code.jquery.com/jquery-3.5.1.slim.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@popperjs/core@2.5.3/dist/umd/popper.min.js"></script>
+    <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/js/bootstrap.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', function () {
+            var ctx = document.getElementById('visitChart').getContext('2d');
+            var visitChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: {{ chart_labels|tojson|safe }},
+                    datasets: [{
+                        label: 'Total Kunjungan',
+                        data: {{ chart_data|tojson|safe }},
+                        backgroundColor: 'rgba(54, 162, 235, 0.2)',
+                        borderColor: 'rgba(54, 162, 235, 1)',
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    scales: {
+                        xAxes: [{
+                            display: true,
+                            scaleLabel: {
+                                display: true,
+                                labelString: 'Tanggal'
+                            }
+                        }],
+                        yAxes: [{
+                            display: true,
+                            scaleLabel: {
+                                display: true,
+                                labelString: 'Jumlah Deteksi'
+                            }
+                        }]
+                    }
+                }
+            });
+
+            var ctx2 = document.getElementById('dailyDetectionChart').getContext('2d');
+            var dailyDetectionChart = new Chart(ctx2, {
+                type: 'bar',
+                data: {
+                    labels: {{ chart_labels|tojson|safe }},
+                    datasets: [{
+                        label: 'Total Deteksi per Hari',
+                        data: {{ chart_data|tojson|safe }},
+                        backgroundColor: 'rgba(75, 192, 192, 0.2)',
+                        borderColor: 'rgba(75, 192, 192, 1)',
+                        borderWidth: 1,
+                        fill: false
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    scales: {
+                        xAxes: [{
+                            display: true,
+                            scaleLabel: {
+                                display: true,
+                                labelString: 'Tanggal'
+                            }
+                        }],
+                        yAxes: [{
+                            display: true,
+                            scaleLabel: {
+                                display: true,
+                                labelString: 'Jumlah Deteksi'
+                            }
+                        }]
+                    }
+                }
+            });
+
+            var ctx3 = document.getElementById('WeeklyDetectionChart').getContext('2d');
+            var weeklyDetectionChart = new Chart(ctx3, {
+                type: 'line',
+                data: {
+                    labels: {{ week_report_labels|tojson|safe }},
+                    datasets: [{
+                        label: 'Total Deteksi per Minggu',
+                        data: {{ week_report_data|tojson|safe }},
+                        backgroundColor: 'rgba(75, 192, 192, 0.2)',
+                        borderColor: 'rgba(75, 192, 192, 1)',
+                        borderWidth: 1,
+                        fill: false
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    scales: {
+                        xAxes: [{
+                            display: true,
+                            scaleLabel: {
+                                display: true,
+                                labelString: 'Minggu'
+                            }
+                        }],
+                        yAxes: [{
+                            display: true,
+                            scaleLabel: {
+                                display: true,
+                                labelString: 'Jumlah Deteksi'
+                            }
+                        }]
+                    }
+                }
+            });
+
+            const tableRows = document.querySelectorAll('tbody tr');
+            const rowsPerPage = 20;
+            const totalPages = Math.ceil(tableRows.length / rowsPerPage);
+            let currentPage = 1;
+
+            function displayRows(page) {
+                const start = (page - 1) * rowsPerPage;
+                const end = start + rowsPerPage;
+
+                tableRows.forEach((row, index) => {
+                    row.style.display = (index >= start && index < end) ? '' : 'none';
+                });
+            }
+
+            function createPagination() {
+                const pagination = document.querySelector('.pagination');
+
+                for (let i = 1; i <= totalPages; i++) {
+                    const pageLink = document.createElement('a');
+                    pageLink.textContent = i;
+                    pageLink.href = '#';
+                    pageLink.addEventListener('click', (e) => {
+                        e.preventDefault();
+                        currentPage = i;
+                        displayRows(currentPage);
+                        updatePagination();
+                    });
+                    pagination.appendChild(pageLink);
+                }
+            }
+
+            function updatePagination() {
+                const paginationLinks = document.querySelectorAll('.pagination a');
+                paginationLinks.forEach((link, index) => {
+                    link.classList.toggle('active', index === currentPage - 1);
+                });
+            }
+
+            displayRows(currentPage);
+            createPagination();
+            updatePagination();
+        });
+
+        var modal = document.getElementById("myModal");
+        var span = document.getElementsByClassName("close")[0];
+
+        function myBtnClick(src) {
+            var modal = document.getElementById("myModal");
+            var modalImg = document.getElementById("img01");
+            modal.style.display = "block";
+            modalImg.src = src;
+        }
+        var span = document.getElementsByClassName("close")[0];
+        span.onclick = function() { 
+            var modal = document.getElementById("myModal");
+            modal.style.display = "none";
+        }
+        window.onclick = function(event) {
+            var modal = document.getElementById("myModal");
+            if (event.target == modal) {
+                modal.style.display = "none";
+            }
+        }
+    </script>
+</body>
+</html>
