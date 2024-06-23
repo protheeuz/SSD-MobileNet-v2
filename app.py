@@ -18,19 +18,18 @@ import time
 import hashlib
 import threading
 import math
-from dateutil.parser import isoparse
-from config import Config  # Tambahkan import ini
+import logging
+logging.basicConfig(level=logging.DEBUG)
+from dateutil.parser import isoparse  # Tambahkan import ini
+from config import Config, get_db_connection
 
 app = Flask(__name__)
-app.config.from_object(Config)
+app.secret_key = 'bd8c592b8fc3bd94861eda0932c8d7c2'
 
-# Inisiasi MySQL
-mysql = MySQLdb.connect(
-    host=app.config['MYSQL_HOST'],
-    user=app.config['MYSQL_USER'],
-    passwd=app.config['MYSQL_PASSWORD'],
-    db=app.config['MYSQL_DB']
-)
+# Membuat koneksi ke database
+mysql = get_db_connection()
+if mysql is None:
+    raise Exception("Database connection failed")
 
 image_save_dir = os.path.join("static", "images")
 os.makedirs(image_save_dir, exist_ok=True)
@@ -63,13 +62,25 @@ class Admin(UserMixin):
 
 @login_manager.user_loader
 def load_user(user_id):
-    cursor = mysql.cursor()
-    cursor.execute("SELECT * FROM admin WHERE id = %s", [user_id])
-    admin = cursor.fetchone()
-    cursor.close()
-    if admin:
-        return Admin(id=admin[0], username=admin[1], nama=admin[2])
+    try:
+        cursor = mysql.cursor()
+        cursor.execute("SELECT * FROM admin WHERE id = %s", [user_id])
+        admin = cursor.fetchone()
+        cursor.close()
+        if admin:
+            return Admin(id=admin[0], username=admin[1], nama=admin[2])
+    except MySQLdb._exceptions.OperationalError as e:
+        print(f"Error loading user: {e}")
+        # Optional: Reconnect to the database if the connection is lost
+        mysql.ping(True)  # This will reconnect if the connection is lost
+        cursor = mysql.cursor()
+        cursor.execute("SELECT * FROM admin WHERE id = %s", [user_id])
+        admin = cursor.fetchone()
+        cursor.close()
+        if admin:
+            return Admin(id=admin[0], username=admin[1], nama=admin[2])
     return None
+
 
 def get_admin_by_username(username):
     cursor = mysql.cursor()
@@ -77,6 +88,7 @@ def get_admin_by_username(username):
     admin = cursor.fetchone()
     cursor.close()
     return admin
+
 
 # Daftar global untuk menyimpan objek yang terdeteksi dan waktu deteksinya
 detected_objects = {}
@@ -111,6 +123,37 @@ def get_week_number(date_str):
     year, week_num, weekday = date.isocalendar()
 
     return week_num
+
+# def is_same_object(pred, threshold=50, time_threshold=5):
+#     current_time = datetime.now()
+#     for obj_id, detection in detected_objects.items():
+#         old_pred = detection['prediction']
+
+#         if 'bbox' not in pred or 'bbox' not in old_pred:
+#             print(f"Missing 'bbox' in prediction or old prediction. Prediction: {pred}, Old Prediction: {old_pred}")
+#             continue
+
+#         time_diff = (current_time - detection['time']).total_seconds()
+#         distance = math.sqrt((pred['bbox']['x'] - old_pred['bbox']['x'])**2 + (pred['bbox']['y'] - old_pred['bbox']['y'])**2)
+
+#         x1_max = max(pred['bbox']['x'] - pred['bbox']['width'] / 2, old_pred['bbox']['x'] - old_pred['bbox']['width'] / 2)
+#         y1_max = max(pred['bbox']['y'] - pred['bbox']['height'] / 2, old_pred['bbox']['y'] - old_pred['bbox']['height'] / 2)
+#         x2_min = min(pred['bbox']['x'] + pred['bbox']['width'] / 2, old_pred['bbox']['x'] + old_pred['bbox']['width'] / 2)
+#         y2_min = min(pred['bbox']['y'] + pred['bbox']['height'] / 2, old_pred['bbox']['y'] + old_pred['bbox']['height'] / 2)
+
+#         overlap_width = max(0, x2_min - x1_max)
+#         overlap_height = max(0, y2_min - y1_max)
+#         overlap_area = overlap_width * overlap_height
+
+#         area1 = pred['bbox']['width'] * pred['bbox']['height']
+#         area2 = old_pred['bbox']['width'] * old_pred['bbox']['height']
+#         total_area = area1 + area2 - overlap_area
+
+#         overlap_ratio = overlap_area / total_area
+
+#         if distance < threshold and overlap_ratio > 0.5 and time_diff < time_threshold:
+#             return obj_id
+#     return None
 
 def is_same_object(pred, threshold=50, time_threshold=5):
     current_time = datetime.now()
@@ -196,6 +239,7 @@ def save_detection_to_db(predictions, mysql, frame):
     else:
         print("Tidak ada deteksi baru yang perlu disimpan.")
 
+
 def detect_and_save(frame, detection_line_position):
     predictions = detect_objects(frame)
     if predictions is not None:
@@ -227,6 +271,7 @@ def detect_and_save(frame, detection_line_position):
 
         save_last_detected_frame(frame)
         save_detection_to_db(predictions['predictions'], mysql)
+
 
 @app.route('/save_last_detection', methods=['POST'])
 @login_required
@@ -371,12 +416,14 @@ def generate_frames():
                b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
 
     cap.release()
-    cv2.destroyAllWindows()
+    # cv2.destroyAllWindows()  # Komentari atau hapus baris ini
+
 
 def save_last_detected_frame(frame):
     with app.app_context():
         last_frame_path = os.path.join(current_app.root_path, 'static', 'detections', 'last_detection.jpg')
         cv2.imwrite(last_frame_path, frame)
+
 
 @app.route('/auth', methods=['GET', 'POST'])
 def auth():
@@ -387,6 +434,7 @@ def auth():
         password = request.form.get('password')
 
         try:
+            mysql.ping(True)  # Reconnect if the connection is lost
             cursor = mysql.cursor()
             cursor.execute("SELECT * FROM admin WHERE username = %s", [username])
             existing_admin = cursor.fetchone()
@@ -397,14 +445,15 @@ def auth():
 
             hashed_password = generate_password_hash(password, method='pbkdf2:sha256')
             cursor.execute("INSERT INTO admin (username, nama, password) VALUES (%s, %s, %s)", (username, nama, hashed_password))
-            mysql.connection.commit()
+            mysql.commit()
             cursor.close()
 
             flash('Pendaftaran berhasil! Kamu bisa masuk sekarang.', 'success')
             return redirect(url_for('auth', action='login'))
 
-        except Exception as e:
+        except MySQLdb._exceptions.OperationalError as e:
             print(f"An error occurred: {e}")
+            mysql.ping(True)  # Reconnect if the connection is lost
             flash('Duh, terdapat kesalahan, nih. Coba lagi ya.', 'danger')
             return render_template('auth.html', action='register')
 
@@ -415,28 +464,66 @@ def auth():
         print(f"Username: {username}")
         print(f"Password: {password}")
 
-        admin = get_admin_by_username(username)
+        try:
+            mysql.ping(True)  # Reconnect if the connection is lost
+            admin = get_admin_by_username(username)
 
-        if admin:
-            print(f"Admin Found: {admin[1]}")
-            print(f"Stored Hashed Password: {admin[3]}")
-            password_check = check_password_hash(admin[3], password)
-            print(f"Password Check: {password_check}")
-            if password_check:
-                print("Password is correct")
-                login_user(Admin(id=admin[0], username=admin[1], nama=admin[2]))
-                print("Redirecting to dashboard...")
-                return redirect(url_for('dashboard'))
+            if admin:
+                print(f"Admin Found: {admin[1]}")
+                print(f"Stored Hashed Password: {admin[3]}")
+                password_check = check_password_hash(admin[3], password)
+                print(f"Password Check: {password_check}")
+                if password_check:
+                    print("Password is correct")
+                    login_user(Admin(id=admin[0], username=admin[1], nama=admin[2]))
+                    print("Redirecting to dashboard...")
+                    return redirect(url_for('dashboard'))
+                else:
+                    print("Hm, sepertinya password kamu salah!")
             else:
-                print("Hm, sepertinya password kamu salah!")
-        else:
-            print("User tidak ditemukan, nih..")
+                print("User tidak ditemukan, nih..")
 
-        flash('Kredensial salah', 'danger')
-        print("Kredensial salah")
-        return render_template('auth.html', action='login')
+            flash('Kredensial salah', 'danger')
+            print("Kredensial salah")
+            return render_template('auth.html', action='login')
+        except MySQLdb._exceptions.OperationalError as e:
+            print(f"An error occurred: {e}")
+            mysql.ping(True)  # Reconnect if the connection is lost
+            flash('Duh, terdapat kesalahan, nih. Coba lagi ya.', 'danger')
+            return render_template('auth.html', action='login')
 
     return render_template('auth.html', action=action)
+
+def register(username, nama, password):
+    try:
+        cursor = mysql.cursor()
+        cursor.execute("SELECT * FROM admin WHERE username = %s", [username])
+        existing_admin = cursor.fetchone()
+
+        if existing_admin:
+            flash('Username sudah tersedia. Tolong gunakan username lain.', 'danger')
+            return
+
+        hashed_password = generate_password_hash(password, method='pbkdf2:sha256')
+        cursor.execute("INSERT INTO admin (username, nama, password) VALUES (%s, %s, %s)", (username, nama, hashed_password))
+        mysql.commit()
+        cursor.close()
+
+        flash('Pendaftaran berhasil! Kamu bisa masuk sekarang.', 'success')
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        flash('Duh, terdapat kesalahan, nih. Coba lagi ya.', 'danger')
+
+def login(username, password):
+    admin = get_admin_by_username(username)
+
+    if admin:
+        if check_password_hash(admin[3], password):
+            login_user(Admin(id=admin[0], username=admin[1], nama=admin[2]))
+            return redirect(url_for('dashboard'))
+
+    flash('Invalid credentials', 'danger')
+
 
 @app.route('/')
 def index():
@@ -444,6 +531,7 @@ def index():
         return redirect(url_for('dashboard'))
     else:
         return redirect(url_for('auth', action='login'))
+
 
 @app.route('/logout')
 @login_required
@@ -454,56 +542,69 @@ def logout():
 @app.route('/dashboard')
 @login_required
 def dashboard():
-    today = datetime.today().date()
-    cursor = mysql.cursor()
+    try:
+        today = datetime.today().date()
+        cursor = mysql.cursor()
+        # Total deteksi hari ini
+        cursor.execute("SELECT COUNT(*) FROM report WHERE tanggal = %s", [today])
+        visits_today = cursor.fetchone()[0]
 
-    # Total deteksi hari ini
-    cursor.execute("SELECT COUNT(*) FROM report WHERE tanggal = %s", [today])
-    visits_today = cursor.fetchone()[0]
+        # Total deteksi keseluruhan
+        cursor.execute("SELECT COUNT(*) FROM report")
+        total_deteksi = cursor.fetchone()[0]
 
-    # Total deteksi keseluruhan
-    cursor.execute("SELECT COUNT(*) FROM report")
-    total_deteksi = cursor.fetchone()[0]
+        # Rata-rata pengunjung
+        cursor.execute("SELECT AVG(total_deteksi) FROM report")
+        rata_rata_pengunjung = cursor.fetchone()[0]
 
-    # Rata-rata pengunjung
-    cursor.execute("SELECT AVG(total_deteksi) FROM report")
-    rata_rata_pengunjung = cursor.fetchone()[0]
+        # Data untuk grafik
+        cursor.execute("SELECT tanggal, SUM(total_deteksi) FROM report GROUP BY tanggal")
+        report_data = cursor.fetchall()
+        chart_labels = [str(row[0]) for row in report_data]
+        chart_data = [row[1] for row in report_data]
+        week_report = {}
+        for row in report_data:
+            week_number = get_week_number(str(row[0]))
+            if ("Minggu " + str(week_number) in week_report):
+                week_report["Minggu " + str(week_number)] += row[1]
+            else:
+                week_report["Minggu " + str(week_number)] = row[1]
+        week_report = dict(sorted(week_report.items()))
+        week_report_labels = list(week_report.keys())
+        week_report_data = list(week_report.values())
 
-    # Data untuk grafik
-    cursor.execute("SELECT tanggal, SUM(total_deteksi) FROM report GROUP BY tanggal")
-    report_data = cursor.fetchall()
-    chart_labels = [str(row[0]) for row in report_data]
-    chart_data = [row[1] for row in report_data]
-    week_report = {}
-    for row in report_data:
-        week_number = get_week_number(str(row[0]))
-        if("Minggu "+str(week_number) in week_report):
-            week_report["Minggu "+str(week_number)] += row[1]
-        else:
-            week_report["Minggu "+str(week_number)] = row[1]
-    week_report = dict(sorted(week_report.items()))
-    week_report_labels = list(week_report.keys())
-    week_report_data = list(week_report.values())
+        # Semua laporan, urutkan berdasarkan tanggal dan waktu terbaru
+        cursor.execute("SELECT * FROM report ORDER BY tanggal DESC, waktu DESC")
+        reports = cursor.fetchall()
 
-    # Semua laporan, urutkan berdasarkan tanggal dan waktu terbaru
-    cursor.execute("SELECT * FROM report ORDER BY tanggal DESC, waktu DESC")
-    reports = cursor.fetchall()
-
-    cursor.close()
-    return render_template('dashboard.html',
-                           visits_today=visits_today,
-                           total_deteksi=total_deteksi,
-                           rata_rata_pengunjung=rata_rata_pengunjung,
-                           chart_labels=chart_labels,
-                           chart_data=chart_data,
-                           week_report_labels=week_report_labels,
-                           week_report_data=week_report_data,
-                           reports=reports)
+        cursor.close()
+        return render_template('dashboard.html',
+                               visits_today=visits_today,
+                               total_deteksi=total_deteksi,
+                               rata_rata_pengunjung=rata_rata_pengunjung,
+                               chart_labels=chart_labels,
+                               chart_data=chart_data,
+                               week_report_labels=week_report_labels,
+                               week_report_data=week_report_data,
+                               reports=reports)
+    except Exception as e:
+        logging.error(f"Error in dashboard: {e}")
+        return "Terjadi kesalahan pada server", 500
 
 @app.route('/detect')
 @login_required
 def detect():
-    return render_template('detect.html')
+    try:
+        return render_template('detect.html')
+    except MySQLdb._exceptions.OperationalError as e:
+        print(f"Error rendering detect.html: {e}")
+        mysql.ping(True)  # Reconnect if the connection is lost
+        return render_template('detect.html')
+    except Exception as e:
+        logging.error(f"Error rendering detect.html: {e}")
+        return "Terjadi kesalahan pada server", 500
+
+
 
 @app.route('/detected_people')
 def detected_people():
@@ -515,6 +616,7 @@ def detected_people():
 @app.route('/video_feed')
 def video_feed():
     return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
+
 
 if __name__ == '__main__':
     app.run(debug=True)
