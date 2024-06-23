@@ -4,13 +4,12 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
     <title>Deteksi Pengunjung Perpustakaan</title>
     <style>
         .video-container {
             position: relative;
-            width: 1000px;
-            height: 800px;
+            width: 640px;
+            height: 480px;
             margin: auto;
             border: 2px solid #ccc;
             border-radius: 10px;
@@ -20,7 +19,7 @@
             align-items: center;
             justify-content: center;
         }
-        .video-container img {
+        .video-container video {
             width: 100%;
             height: auto;
         }
@@ -33,121 +32,54 @@
             padding: 5px 10px;
             border-radius: 5px;
         }
-        .sidebar {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-        }
-        .sidebar .card {
-            margin: 10px 0;
-        }
-        .skeleton {
-            width: 100%;
-            height: 100%;
-            background: #ccc;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 24px;
-            color: #888;
-        }
     </style>
 </head>
 <body>
     <div class="container text-center">
         <h1 class="my-4">Frame Deteksi Pengunjung Perpustakaan</h1>
-        <div class="row justify-content-center">
-            <div class="col-md-8">
-                <div class="video-container">
-                    <div class="skeleton" id="skeleton">Menunggu...</div>
-                    <img id="videoFeed" src="{{ url_for('video_feed') }}" alt="Video feed" style="display: none;">
-                    <div class="count-overlay" id="totalDetected">0 Total terdeteksi</div>
-                </div>
-            </div>
-            <div class="col-md-4 sidebar">
-                <div class="card">
-                    <div class="card-body text-center">
-                        <h5>Total Terdeteksi</h5>
-                        <h3 id="totalDetectedCard">0</h3>
-                    </div>
-                </div>
-                <a href="{{ url_for('dashboard') }}" class="btn btn-primary mt-4" id="backToDashboard">Kembali ke dashboard</a>
-            </div>
+        <div class="video-container">
+            <video id="videoFeed" autoplay muted playsinline></video>
+            <div class="count-overlay" id="totalDetected">0 Total terdeteksi</div>
         </div>
+        <a href="{{ url_for('dashboard') }}" class="btn btn-primary mt-4">Kembali ke dashboard</a>
     </div>
 
-    <script src="https://code.jquery.com/jquery-3.5.1.min.js"></script>
-    <script src="https://cdn.roboflow.com/0.2.26/roboflow.js"></script>
     <script>
-roboflow.auth({
-    publishable_key: "rf_UOFWG0ggNJPXADvipV5PZcH0iOH2"
-}).load({
-    model: "people-object-detection-rxb7e",
-    version: 3
-}).then(function(model) {
-    const video = document.getElementById('videoFeed');
-    const skeleton = document.getElementById('skeleton');
+        const video = document.getElementById('videoFeed');
+        const overlay = document.getElementById('totalDetected');
 
-    video.onload = () => {
-        skeleton.style.display = 'none';
-        video.style.display = 'block';
-    };
+        navigator.mediaDevices.getUserMedia({ video: true })
+            .then(stream => {
+                video.srcObject = stream;
+            })
+            .catch(error => {
+                console.error('Error accessing webcam: ', error);
+            });
 
-    setInterval(() => {
-        model.detect(video).then(predictions => {
-            if (predictions.length > 0) {
-                console.log('Predictions:', predictions); // Log predictions
-                fetch('/update_detected_people', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        predictions: predictions,
-                        timestamp: new Date().toISOString()
-                    })
-                })
-                .then(response => response.json())
-                .then(data => {
-                    document.getElementById('totalDetected').innerText = `${data.detected_people} Total terdeteksi`;
-                    document.getElementById('totalDetectedCard').innerText = data.detected_people;
-                })
-                .catch(error => {
-                    console.error('Error reporting detection:', error);
-                });
-            }
-        });
-    }, 1000);
-});
-
-
-        document.getElementById('backToDashboard').addEventListener('click', function () {
-            captureLastFrame();
-        });
-
-        function captureLastFrame() {
-            const video = document.getElementById('videoFeed');
+        function captureFrame() {
             const canvas = document.createElement('canvas');
-            const context = canvas.getContext('2d');
             canvas.width = video.videoWidth;
             canvas.height = video.videoHeight;
+            const context = canvas.getContext('2d');
             context.drawImage(video, 0, 0, canvas.width, canvas.height);
             const imageData = canvas.toDataURL('image/jpeg');
 
-            fetch('/save_last_detection', {
+            fetch('/process_frame', {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
+                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ image: imageData })
-            }).then(response => {
-                if (response.ok) {
-                    window.location.href = "{{ url_for('dashboard') }}";
-                }
-            }).catch(error => {
-                console.error('Error saving last detection:', error);
+            })
+            .then(response => response.json())
+            .then(data => {
+                overlay.innerText = `${data.detected_people} Total terdeteksi`;
+                console.log(data);
+            })
+            .catch(error => {
+                console.error('Error processing frame: ', error);
             });
         }
+
+        setInterval(captureFrame, 1000);
     </script>
 </body>
 </html>

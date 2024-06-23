@@ -286,6 +286,8 @@ def update_detected_people():
 
     return jsonify({'status': 'success', 'detected_people': detected_people})
 
+
+
 @login_required
 def start_detection():
     camera = VideoCamera()
@@ -372,6 +374,24 @@ def save_last_detected_frame(frame):
     with app.app_context():
         last_frame_path = os.path.join(current_app.root_path, 'static', 'detections', 'last_detection.jpg')
         cv2.imwrite(last_frame_path, frame)
+
+@app.route('/process_frame', methods=['POST'])
+def process_frame():
+    data = request.get_json()
+    image_data = data['image'].split(",")[1]
+    image_bytes = base64.b64decode(image_data)
+    nparr = np.frombuffer(image_bytes, np.uint8)
+    frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+    predictions = detect_objects(frame)
+    detected_people = 0
+
+    if predictions:
+        for pred in predictions['predictions']:
+            if pred['class'] == 'pengunjung':
+                detected_people += 1
+
+    return jsonify({'detected_people': detected_people})
 
 @app.route('/auth', methods=['GET', 'POST'])
 def auth():
