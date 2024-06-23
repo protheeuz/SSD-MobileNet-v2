@@ -18,23 +18,18 @@ import time
 import hashlib
 import threading
 import math
-from dateutil.parser import isoparse  # Tambahkan import ini
+from dateutil.parser import isoparse
+from config import Config  # Tambahkan import ini
 
 app = Flask(__name__)
-app.secret_key = 'bd8c592b8fc3bd94861eda0932c8d7c2'
+app.config.from_object(Config)
 
-# Konfigurasi database
-app.config['MYSQL_HOST'] = 'localhost'
-app.config['MYSQL_USER'] = 'root'
-app.config['MYSQL_PASSWORD'] = ''
-app.config['MYSQL_DB'] = 'db_perpustakaan'
-
-# Membuat koneksi ke database
+# Inisiasi MySQL
 mysql = MySQLdb.connect(
-    host="localhost",
-    user="root",
-    passwd="",
-    db="db_perpustakaan"
+    host=app.config['MYSQL_HOST'],
+    user=app.config['MYSQL_USER'],
+    passwd=app.config['MYSQL_PASSWORD'],
+    db=app.config['MYSQL_DB']
 )
 
 image_save_dir = os.path.join("static", "images")
@@ -83,7 +78,6 @@ def get_admin_by_username(username):
     cursor.close()
     return admin
 
-
 # Daftar global untuk menyimpan objek yang terdeteksi dan waktu deteksinya
 detected_objects = {}
 
@@ -108,46 +102,15 @@ def clean_old_detections(max_age_seconds=10):
             to_delete.append(obj_id)
     for obj_id in to_delete:
         del detected_objects[obj_id]
-        
+
 def get_week_number(date_str):
     # Convert the string to a datetime object
     date = datetime.strptime(date_str, '%Y-%m-%d').date()
-    
+
     # Get the ISO calendar week number
     year, week_num, weekday = date.isocalendar()
-    
+
     return week_num
-
-# def is_same_object(pred, threshold=50, time_threshold=5):
-#     current_time = datetime.now()
-#     for obj_id, detection in detected_objects.items():
-#         old_pred = detection['prediction']
-
-#         if 'bbox' not in pred or 'bbox' not in old_pred:
-#             print(f"Missing 'bbox' in prediction or old prediction. Prediction: {pred}, Old Prediction: {old_pred}")
-#             continue
-
-#         time_diff = (current_time - detection['time']).total_seconds()
-#         distance = math.sqrt((pred['bbox']['x'] - old_pred['bbox']['x'])**2 + (pred['bbox']['y'] - old_pred['bbox']['y'])**2)
-
-#         x1_max = max(pred['bbox']['x'] - pred['bbox']['width'] / 2, old_pred['bbox']['x'] - old_pred['bbox']['width'] / 2)
-#         y1_max = max(pred['bbox']['y'] - pred['bbox']['height'] / 2, old_pred['bbox']['y'] - old_pred['bbox']['height'] / 2)
-#         x2_min = min(pred['bbox']['x'] + pred['bbox']['width'] / 2, old_pred['bbox']['x'] + old_pred['bbox']['width'] / 2)
-#         y2_min = min(pred['bbox']['y'] + pred['bbox']['height'] / 2, old_pred['bbox']['y'] + old_pred['bbox']['height'] / 2)
-
-#         overlap_width = max(0, x2_min - x1_max)
-#         overlap_height = max(0, y2_min - y1_max)
-#         overlap_area = overlap_width * overlap_height
-
-#         area1 = pred['bbox']['width'] * pred['bbox']['height']
-#         area2 = old_pred['bbox']['width'] * old_pred['bbox']['height']
-#         total_area = area1 + area2 - overlap_area
-
-#         overlap_ratio = overlap_area / total_area
-
-#         if distance < threshold and overlap_ratio > 0.5 and time_diff < time_threshold:
-#             return obj_id
-#     return None
 
 def is_same_object(pred, threshold=50, time_threshold=5):
     current_time = datetime.now()
@@ -202,7 +165,7 @@ def save_detection_to_db(predictions, mysql, frame):
                 'width': pred['width'],
                 'height': pred['height']
             }
-        
+
         bbox = pred['bbox']
         obj_id = is_same_object(pred)
         if obj_id is None:
@@ -219,7 +182,7 @@ def save_detection_to_db(predictions, mysql, frame):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         image_filename = f"{timestamp}.jpg"
         image_path = os.path.join(image_save_dir, image_filename)
-        image_path = image_path.replace("\\", "/")  # Ensure the path uses forward slashes
+        image_path = image_path.replace("\\", "/")
 
         if isinstance(frame, np.ndarray):
             cv2.imwrite(image_path, frame)
@@ -232,7 +195,6 @@ def save_detection_to_db(predictions, mysql, frame):
         print(f"Total deteksi disimpan ke database: {total_deteksi}")
     else:
         print("Tidak ada deteksi baru yang perlu disimpan.")
-
 
 def detect_and_save(frame, detection_line_position):
     predictions = detect_objects(frame)
@@ -266,7 +228,6 @@ def detect_and_save(frame, detection_line_position):
         save_last_detected_frame(frame)
         save_detection_to_db(predictions['predictions'], mysql)
 
-        
 @app.route('/save_last_detection', methods=['POST'])
 @login_required
 def save_last_detection():
@@ -293,7 +254,7 @@ def delete_report(report_id):
     except Exception as e:
         flash('Terjadi kesalahan saat menghapus laporan', 'danger')
         print(f"Error: {e}")
-    
+
     return redirect(url_for('dashboard'))
 
 @app.route('/update_detected_people', methods=['POST'])
@@ -411,12 +372,11 @@ def generate_frames():
 
     cap.release()
     cv2.destroyAllWindows()
-    
+
 def save_last_detected_frame(frame):
     with app.app_context():
         last_frame_path = os.path.join(current_app.root_path, 'static', 'detections', 'last_detection.jpg')
         cv2.imwrite(last_frame_path, frame)
-
 
 @app.route('/auth', methods=['GET', 'POST'])
 def auth():
@@ -434,10 +394,10 @@ def auth():
             if existing_admin:
                 flash('Username sudah tersedia. Tolong gunakan username lain.', 'danger')
                 return render_template('auth.html', action='register')
-            
+
             hashed_password = generate_password_hash(password, method='pbkdf2:sha256')
             cursor.execute("INSERT INTO admin (username, nama, password) VALUES (%s, %s, %s)", (username, nama, hashed_password))
-            mysql.commit()
+            mysql.connection.commit()
             cursor.close()
 
             flash('Pendaftaran berhasil! Kamu bisa masuk sekarang.', 'success')
@@ -451,12 +411,12 @@ def auth():
     if action == 'login' and request.method == 'POST':
         username = request.form.get('username')
         password = request.form.get('password')
-        
+
         print(f"Username: {username}")
         print(f"Password: {password}")
 
         admin = get_admin_by_username(username)
-        
+
         if admin:
             print(f"Admin Found: {admin[1]}")
             print(f"Stored Hashed Password: {admin[3]}")
@@ -478,45 +438,12 @@ def auth():
 
     return render_template('auth.html', action=action)
 
-
-def register(username, nama, password):
-    try:
-        cursor = mysql.cursor()
-        cursor.execute("SELECT * FROM admin WHERE username = %s", [username])
-        existing_admin = cursor.fetchone()
-
-        if existing_admin:
-            flash('Username sudah tersedia. Tolong gunakan username lain.', 'danger')
-            return
-
-        hashed_password = generate_password_hash(password, method='pbkdf2:sha256')
-        cursor.execute("INSERT INTO admin (username, nama, password) VALUES (%s, %s, %s)", (username, nama, hashed_password))
-        mysql.commit()
-        cursor.close()
-
-        flash('Pendaftaran berhasil! Kamu bisa masuk sekarang.', 'success')
-    except Exception as e:
-        print(f"An error occurred: {e}")
-        flash('Duh, terdapat kesalahan, nih. Coba lagi ya.', 'danger')
-
-def login(username, password):
-    admin = get_admin_by_username(username)
-    
-    if admin:
-        if check_password_hash(admin[3], password):
-            login_user(Admin(id=admin[0], username=admin[1], nama=admin[2]))
-            return redirect(url_for('dashboard'))
-    
-    flash('Invalid credentials', 'danger')
-
-
 @app.route('/')
 def index():
     if current_user.is_authenticated:
         return redirect(url_for('dashboard'))
     else:
         return redirect(url_for('auth', action='login'))
-
 
 @app.route('/logout')
 @login_required
@@ -549,7 +476,7 @@ def dashboard():
     chart_data = [row[1] for row in report_data]
     week_report = {}
     for row in report_data:
-        week_number= get_week_number(str(row[0]))
+        week_number = get_week_number(str(row[0]))
         if("Minggu "+str(week_number) in week_report):
             week_report["Minggu "+str(week_number)] += row[1]
         else:
@@ -563,14 +490,14 @@ def dashboard():
     reports = cursor.fetchall()
 
     cursor.close()
-    return render_template('dashboard.html', 
-                           visits_today=visits_today, 
+    return render_template('dashboard.html',
+                           visits_today=visits_today,
                            total_deteksi=total_deteksi,
-                           rata_rata_pengunjung=rata_rata_pengunjung, 
+                           rata_rata_pengunjung=rata_rata_pengunjung,
                            chart_labels=chart_labels,
-                           chart_data=chart_data, 
-                           week_report_labels = week_report_labels,
-                           week_report_data = week_report_data,
+                           chart_data=chart_data,
+                           week_report_labels=week_report_labels,
+                           week_report_data=week_report_data,
                            reports=reports)
 
 @app.route('/detect')
@@ -588,7 +515,6 @@ def detected_people():
 @app.route('/video_feed')
 def video_feed():
     return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
-
 
 if __name__ == '__main__':
     app.run(debug=True)
