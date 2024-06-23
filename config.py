@@ -16,7 +16,7 @@ def get_db_connection():
             passwd=Config.MYSQL_PASSWORD,
             db=Config.MYSQL_DB
         )
-        connection.ping(True)  # Reconnect if the connection is lost
+        connection.ping(True)
         return connection
     except MySQLdb._exceptions.OperationalError as e:
         print(f"Error connecting to the database: {e}")
