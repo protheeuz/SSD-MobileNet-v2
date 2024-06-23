@@ -1,14 +1,20 @@
 import MySQLdb
 import cv2
 import numpy as np
-from flask import Flask, Response, render_template, redirect, url_for, flash, request, jsonify
+from flask import Flask, Response, current_app, render_template, redirect, url_for, flash, request, jsonify
 from flask_login import LoginManager, login_user, login_required, logout_user, current_user, UserMixin
 from werkzeug.security import generate_password_hash, check_password_hash
-from flask_socketio import SocketIO, emit
 from datetime import datetime
+from db import app
+from models import create_admin, get_admin_by_username, create_report
+from camera import VideoCamera
 from api import detect_objects
+from pathlib import Path
 import base64
+from io import BytesIO
+from PIL import Image
 import os
+import time
 import hashlib
 import threading
 import math
@@ -19,8 +25,6 @@ from config import Config, get_db_connection
 logging.basicConfig(level=logging.DEBUG)
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'secret!'
-socketio = SocketIO(app)
 app.secret_key = 'bd8c592b8fc3bd94861eda0932c8d7c2'
 
 # Membuat koneksi ke database
@@ -31,9 +35,13 @@ if mysql is None:
 image_save_dir = os.path.join("static", "images")
 os.makedirs(image_save_dir, exist_ok=True)
 current_detected_people = 0
+last_saved_detected_people = 0
 
 login_manager = LoginManager(app)
 login_manager.login_view = 'auth'
+
+# variabel global buat simpan path gambar terakhir pendeteksian
+last_detected_image_path = None
 
 class Admin(UserMixin):
     def __init__(self, id, username, nama):
@@ -64,7 +72,7 @@ def load_user(user_id):
             return Admin(id=admin[0], username=admin[1], nama=admin[2])
     except MySQLdb._exceptions.OperationalError as e:
         print(f"Error loading user: {e}")
-        mysql.ping(True)  # This will reconnect if the connection is lost
+        mysql.ping(True)
         cursor = mysql.cursor()
         cursor.execute("SELECT * FROM admin WHERE id = %s", [user_id])
         admin = cursor.fetchone()
@@ -105,6 +113,11 @@ def clean_old_detections(max_age_seconds=10):
     for obj_id in to_delete:
         del detected_objects[obj_id]
 
+def get_week_number(date_str):
+    date = datetime.strptime(date_str, '%Y-%m-%d').date()
+    year, week_num, weekday = date.isocalendar()
+    return week_num
+
 def is_same_object(pred, threshold=50, time_threshold=5):
     current_time = datetime.now()
     for obj_id, detection in detected_objects.items():
@@ -135,14 +148,22 @@ def save_detection_to_db(predictions, mysql, frame):
     hari = now.strftime("%A")
     tanggal = now.date()
     waktu = now.time()
+
     clean_old_detections()
     detected_ids = set()
     total_deteksi = 0
+
     for pred in predictions:
         print(f"Processing prediction: {pred}")
         if 'bbox' not in pred:
             print(f"Prediction missing 'bbox': {pred}")
-            pred['bbox'] = {'x': pred['x'], 'y': pred['y'], 'width': pred['width'], 'height': pred['height']}
+            pred['bbox'] = {
+                'x': pred['x'],
+                'y': pred['y'],
+                'width': pred['width'],
+                'height': pred['height']
+            }
+
         bbox = pred['bbox']
         obj_id = is_same_object(pred)
         if obj_id is None:
@@ -154,36 +175,72 @@ def save_detection_to_db(predictions, mysql, frame):
                 print(f"Deteksi berhasil dimasukkan ke database: {detected_objects[unique_id]}")
         else:
             detected_objects[obj_id]['time'] = now
+
     if total_deteksi > 0:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         image_filename = f"{timestamp}.jpg"
         image_path = os.path.join(image_save_dir, image_filename)
         image_path = image_path.replace("\\", "/")
+
         if isinstance(frame, np.ndarray):
             cv2.imwrite(image_path, frame)
             print(f"Image saved at: {image_path}")
         else:
             print("Frame is not a valid numpy array.")
             return
+
         create_report(hari, tanggal, waktu, total_deteksi, image_path, mysql)
         print(f"Total deteksi disimpan ke database: {total_deteksi}")
     else:
         print("Tidak ada deteksi baru yang perlu disimpan.")
+
+def detect_and_save(frame, detection_line_position):
+    predictions = detect_objects(frame)
+    if predictions is not None:
+        now = datetime.now()
+        hari = now.strftime("%A")
+        tanggal = now.date()
+        waktu = now.time()
+
+        clean_old_detections()
+        detected_ids = set()
+
+        for pred in predictions['predictions']:
+            bbox = pred.get('bbox', pred)
+            obj_id = is_same_object(bbox)
+            if obj_id is None:
+                unique_id = generate_unique_id(pred)
+                if unique_id:
+                    detected_objects[unique_id] = {'time': now, 'prediction': bbox, 'crossed_line': False}
+                    detected_ids.add(unique_id)
+                    total_deteksi = 1
+                    create_report(hari, tanggal, waktu, total_deteksi, mysql)
+                    print(f"Deteksi berhasil disimpan: {detected_objects[unique_id]}")
+            else:
+                detected_objects[obj_id]['time'] = now
+
+            if bbox['y'] > detection_line_position and not detected_objects[unique_id]['crossed_line']:
+                detected_objects[unique_id]['crossed_line'] = True
+
+        save_last_detected_frame(frame)
+        save_detection_to_db(predictions['predictions'], mysql)
 
 @app.route('/save_last_detection', methods=['POST'])
 @login_required
 def save_last_detection():
     data = request.get_json()
     image_data = data['image']
+
     image_data = image_data.split(",")[1]
     image_bytes = base64.b64decode(image_data)
     last_frame_path = os.path.join(current_app.root_path, 'static', 'detections', 'last_detection.jpg')
+
     with open(last_frame_path, "wb") as f:
         f.write(image_bytes)
+
     return jsonify({"status": "success"})
 
 @app.route('/delete_report/<int:report_id>', methods=['POST'])
-@login_required
 def delete_report(report_id):
     try:
         cursor = mysql.cursor()
@@ -194,27 +251,127 @@ def delete_report(report_id):
     except Exception as e:
         flash('Terjadi kesalahan saat menghapus laporan', 'danger')
         print(f"Error: {e}")
+
     return redirect(url_for('dashboard'))
 
-@socketio.on('connect')
-def handle_connect():
-    print('Client connected')
-
-@socketio.on('disconnect')
-def handle_disconnect():
-    print('Client disconnected')
-
-@socketio.on('video_stream')
-def handle_video_stream(data):
+@app.route('/update_detected_people', methods=['POST'])
+@login_required
+def update_detected_people():
     global current_detected_people
-    header, encoded = data.split(",", 1)
-    img_data = base64.b64decode(encoded)
-    nparr = np.frombuffer(img_data, np.uint8)
-    frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-    predictions = detect_objects(frame)
-    detected_people = sum(1 for pred in predictions['predictions'] if pred['class'] == 'pengunjung')
+    data = request.get_json()
+    predictions = data['predictions']
+    timestamp = data['timestamp']
+
+    now = isoparse(timestamp)
+    detected_people = 0
+
+    clean_old_detections()
+
+    for pred in predictions:
+        if 'bbox' not in pred:
+            print(f"Prediction missing 'bbox': {pred}")
+            continue
+        bbox = pred['bbox']
+        if pred['class'] == 'pengunjung':
+            obj_id = is_same_object(pred)
+            if obj_id is None:
+                unique_id = generate_unique_id(pred)
+                if unique_id:
+                    detected_objects[unique_id] = {'time': now, 'prediction': bbox, 'crossed_line': False}
+                    detected_people += 1
+            else:
+                detected_objects[obj_id]['time'] = now
+
     current_detected_people = detected_people
-    emit('detected_people', {'detected_people': detected_people})
+
+    return jsonify({'status': 'success', 'detected_people': detected_people})
+
+@login_required
+def start_detection():
+    camera = VideoCamera()
+    frame, image = camera.get_frame()
+
+    image_pil = Image.fromarray(image)
+    image_pil.save("temp.jpg")
+
+    result_image_base64, predictions = detect_objects("temp.jpg")
+
+    os.remove("temp.jpg")
+
+    now = datetime.now()
+    hari = now.strftime("%A")
+    tanggal = now.date()
+    waktu = now.time()
+
+    clean_old_detections()
+
+    detected_ids = set()
+
+    for pred in predictions:
+        obj_id = is_same_object(pred)
+        if obj_id is None:
+            unique_id = generate_unique_id(pred)
+            detected_objects[unique_id] = {'time': now, 'prediction': pred, 'crossed_line': False}
+            detected_ids.add(unique_id)
+            total_deteksi = 1
+            create_report(hari, tanggal, waktu, total_deteksi, mysql)
+        else:
+            detected_objects[obj_id]['time'] = now
+
+def generate_frames():
+    last_detected_people = 0
+    cap = cv2.VideoCapture(0)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    frame_skip = 5
+    frame_count = 0
+
+    detection_line_position = int(480 / 2)
+
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        frame = cv2.resize(frame, (320, 240))
+        frame_count += 1
+
+        cv2.line(frame, (0, detection_line_position), (320, detection_line_position), (0, 255, 255), 2)
+        detections = detect_objects(frame)
+        detected_people = sum(1 for detection in detections['predictions'] if detection['class'] == 'pengunjung')
+        global current_detected_people
+        current_detected_people = detected_people
+
+        if detections is not None:
+            for pred in detections['predictions']:
+                x1 = int(pred['x'] - pred['width'] / 2)
+                y1 = int(pred['y'] - pred['height'] / 2)
+                x2 = int(pred['x'] + pred['width'] / 2)
+                y2 = int(pred['y'] + pred['height'] / 2)
+                class_name = pred['class']
+                confidence = pred['confidence']
+                unique_id = generate_unique_id(pred)
+
+                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                cv2.putText(frame, f"{class_name} ({confidence:.2f}) ID: {unique_id}", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 0), 1)
+            if detected_people != last_detected_people:
+                last_detected_people = detected_people
+                if frame_count % frame_skip == 0 and detected_people != last_saved_detected_people:
+                    if detected_people != 0:
+                        frame_copy = frame.copy()
+                        threading.Thread(target=save_detection_to_db, args=(detections['predictions'], mysql, frame_copy)).start()
+
+        ret, buffer = cv2.imencode('.jpg', frame)
+        frame_bytes = buffer.tobytes()
+        yield (b'--frame\r\n'
+               b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+
+    cap.release()
+
+def save_last_detected_frame(frame):
+    with app.app_context():
+        last_frame_path = os.path.join(current_app.root_path, 'static', 'detections', 'last_detection.jpg')
+        cv2.imwrite(last_frame_path, frame)
 
 @app.route('/auth', methods=['GET', 'POST'])
 def auth():
@@ -223,33 +380,42 @@ def auth():
         username = request.form.get('username')
         nama = request.form.get('nama')
         password = request.form.get('password')
+
         try:
             mysql.ping(True)
             cursor = mysql.cursor()
             cursor.execute("SELECT * FROM admin WHERE username = %s", [username])
             existing_admin = cursor.fetchone()
+
             if existing_admin:
                 flash('Username sudah tersedia. Tolong gunakan username lain.', 'danger')
                 return render_template('auth.html', action='register')
+
             hashed_password = generate_password_hash(password, method='pbkdf2:sha256')
             cursor.execute("INSERT INTO admin (username, nama, password) VALUES (%s, %s, %s)", (username, nama, hashed_password))
             mysql.commit()
             cursor.close()
+
             flash('Pendaftaran berhasil! Kamu bisa masuk sekarang.', 'success')
             return redirect(url_for('auth', action='login'))
+
         except MySQLdb._exceptions.OperationalError as e:
             print(f"An error occurred: {e}")
             mysql.ping(True)
             flash('Duh, terdapat kesalahan, nih. Coba lagi ya.', 'danger')
             return render_template('auth.html', action='register')
+
     if action == 'login' and request.method == 'POST':
         username = request.form.get('username')
         password = request.form.get('password')
+
         print(f"Username: {username}")
         print(f"Password: {password}")
+
         try:
             mysql.ping(True)
             admin = get_admin_by_username(username)
+
             if admin:
                 print(f"Admin Found: {admin[1]}")
                 print(f"Stored Hashed Password: {admin[3]}")
@@ -264,6 +430,7 @@ def auth():
                     print("Hm, sepertinya password kamu salah!")
             else:
                 print("User tidak ditemukan, nih..")
+
             flash('Kredensial salah', 'danger')
             print("Kredensial salah")
             return render_template('auth.html', action='login')
@@ -272,6 +439,7 @@ def auth():
             mysql.ping(True)
             flash('Duh, terdapat kesalahan, nih. Coba lagi ya.', 'danger')
             return render_template('auth.html', action='login')
+
     return render_template('auth.html', action=action)
 
 def register(username, nama, password):
@@ -279,13 +447,16 @@ def register(username, nama, password):
         cursor = mysql.cursor()
         cursor.execute("SELECT * FROM admin WHERE username = %s", [username])
         existing_admin = cursor.fetchone()
+
         if existing_admin:
             flash('Username sudah tersedia. Tolong gunakan username lain.', 'danger')
             return
+
         hashed_password = generate_password_hash(password, method='pbkdf2:sha256')
         cursor.execute("INSERT INTO admin (username, nama, password) VALUES (%s, %s, %s)", (username, nama, hashed_password))
         mysql.commit()
         cursor.close()
+
         flash('Pendaftaran berhasil! Kamu bisa masuk sekarang.', 'success')
     except Exception as e:
         print(f"An error occurred: {e}")
@@ -293,10 +464,12 @@ def register(username, nama, password):
 
 def login(username, password):
     admin = get_admin_by_username(username)
+
     if admin:
         if check_password_hash(admin[3], password):
             login_user(Admin(id=admin[0], username=admin[1], nama=admin[2]))
             return redirect(url_for('dashboard'))
+
     flash('Invalid credentials', 'danger')
 
 @app.route('/')
@@ -370,7 +543,7 @@ def detect():
 @app.route('/detected_people')
 def detected_people():
     global current_detected_people
-    if current_detected_people > 0:
+    if(current_detected_people > 0):
         print(current_detected_people)
     return jsonify({'detected_people': current_detected_people})
 
@@ -379,4 +552,4 @@ def video_feed():
     return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
 if __name__ == '__main__':
-    socketio.run(app, host='0.0.0.0', port=5000)
+    app.run(debug=True)
